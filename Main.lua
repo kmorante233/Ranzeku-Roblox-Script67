@@ -1,47 +1,35 @@
 --[[
     TARGETING & VISUALS — SMART V2
+    By 00B_qruel
 
-    Full replacement. Unload the previous version first.
+    Unload the previous version before running.
     Use only in an experience you own or have permission to test.
 
-    PRESERVED
-      - V1 activation, targeting, filters, visuals, and appearance.
-      - Full-screen-centered FOV circles.
-      - No bottom-left target/log panel.
-      - Menu selection navigation disabled.
-
-    ADDED
-      - Independent Smart Aim V2.
-      - Event-driven character scan cache.
-      - Custom rig / renamed part fallbacks.
-      - Manual character scanner with complete paginated hierarchy.
+    Included:
+      - Aim V1 and independent Smart Aim V2.
+      - Event-driven character scanning.
+      - Custom-rig and renamed-part fallbacks.
+      - Paginated manual character hierarchy.
       - Per-player manual component selection.
-      - Visual-only hitbox dimensions and outlines.
-      - Shared team allowlist and team colors.
+      - Shared team selection and colors.
+      - Player overlays and centered FOV circles.
       - Draggable mobile V2 control.
       - Validated settings and optional persistent storage.
+      - Simplified hitbox menu: one toggle and one size slider.
 
-    IMPORTANT
-      - Hitboxes are VISUAL ONLY.
-      - No real character sizes, collisions, or weapon hits are changed.
-      - V2 takes camera priority while V2 is active.
-      - V1 runs when V2 is not active.
-      - Custom models need a Humanoid OR numeric Health/MaxHealth
-        attributes on their Character Model for live targeting.
-      - Arbitrary custom rig semantics cannot be inferred perfectly.
-        Use AimRole / AimTargetable attributes or manual selection.
+    Hitboxes are VISUAL ONLY.
+    No real character sizes, collisions, or weapon hits are changed.
 
-    OPTIONAL CUSTOM RIG ATTRIBUTES
-      On BasePart:
-        AimTargetable = false     -- exclude component
-        AimTargetable = true      -- explicitly identify candidate
-        AimRole = "Head"          -- Head / Torso / Root
+    Optional custom rig attributes:
+      BasePart:
+        AimTargetable = false / true
+        AimRole = "Head" / "Torso" / "Root"
 
-      On a custom Character Model without a Humanoid:
+      Character Model without a Humanoid:
         Health = 100
         MaxHealth = 100
 
-    Uses the same loader environment as the previous working version.
+    Uses the same loader environment as the original script.
 ]]
 
 --==============================================================
@@ -60,7 +48,6 @@ local LocalPlayer = Players.LocalPlayer
 assert(LocalPlayer, "Run this on the client.")
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-
 local Environment = _G
 
 if type(getgenv) == "function" then
@@ -76,7 +63,6 @@ local PreviousSession = Environment[SessionKey]
 
 if type(PreviousSession) == "table"
     and type(PreviousSession.Cleanup) == "function" then
-
     pcall(PreviousSession.Cleanup)
 end
 
@@ -89,7 +75,6 @@ end
 
 Session.Cleanup = nil
 
--- Same WindUI loader as the previous working script.
 local WindUI = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
 ))()
@@ -152,7 +137,7 @@ local Config = {
         FOVColor = "#66E3FF",
         FOVThickness = 1.5,
 
-        -- 0 = instant; 100 = soft, slower tracking.
+        -- 0 = instant; 100 = softer, slower tracking.
         Smoothness = 50,
         TargetPart = "Auto",
         Priority = "Crosshair",
@@ -168,22 +153,18 @@ local Config = {
 
         Deadzone = 0,
         AcquisitionRate = 20,
-
         FloatingX = 0.90,
         FloatingY = 0.65,
 
-        -- UserId string -> relative component key.
         ManualTargets = {},
     },
 
     Hitbox = {
         Enabled = false,
+        Size = 4,
+
+        -- Internal defaults; only Enabled and Size appear in the menu.
         TargetPart = "Root",
-
-        X = 4,
-        Y = 6,
-        Z = 3,
-
         Transparency = 70,
         Fill = true,
         Outlines = true,
@@ -201,10 +182,7 @@ local Config = {
     },
 
     Shared = {
-        -- Tokens: "Team: TeamName" or "Neutral / unassigned".
         SelectedTeams = {},
-
-        -- Team token -> hex color override.
         TeamColors = {},
     },
 }
@@ -229,9 +207,7 @@ local Limits = {
     ["V2.FloatingX"] = { 0, 1 },
     ["V2.FloatingY"] = { 0, 1 },
 
-    ["Hitbox.X"] = { 0.2, 30 },
-    ["Hitbox.Y"] = { 0.2, 30 },
-    ["Hitbox.Z"] = { 0.2, 30 },
+    ["Hitbox.Size"] = { 0.2, 30 },
     ["Hitbox.Transparency"] = { 0, 100 },
     ["Hitbox.OutlineThickness"] = { 0.01, 0.3 },
     ["Hitbox.OutlineTransparency"] = { 0, 100 },
@@ -258,11 +234,11 @@ local Choices = {
     },
 }
 
-local function finite(number)
-    return type(number) == "number"
-        and number == number
-        and number ~= math.huge
-        and number ~= -math.huge
+local function finite(value)
+    return type(value) == "number"
+        and value == value
+        and value ~= math.huge
+        and value ~= -math.huge
 end
 
 local function validHex(value)
@@ -286,7 +262,6 @@ local function cleanStringArray(value)
         if type(entry) == "string"
             and #entry <= 300
             and not seen[entry] then
-
             seen[entry] = true
             table.insert(result, entry)
         end
@@ -339,7 +314,6 @@ local function mergeConfiguration(saved)
                             and value ~= "Unknown"
                             and value ~= "Escape"
                             and value ~= "RightShift" then
-
                             Config.V2.Key = value
                         end
                     end
@@ -357,7 +331,6 @@ local function mergeConfiguration(saved)
                 if type(token) == "string"
                     and #token <= 300
                     and validHex(hex) then
-
                     Config.Shared.TeamColors[token] = hex
                 end
             end
@@ -366,17 +339,18 @@ local function mergeConfiguration(saved)
 
     if type(saved.V2) == "table"
         and type(saved.V2.ManualTargets) == "table" then
-
         for userId, key in pairs(saved.V2.ManualTargets) do
             if type(userId) == "string"
                 and userId:match("^%d+$")
                 and type(key) == "string"
                 and #key <= 4096 then
-
                 Config.V2.ManualTargets[userId] = key
             end
         end
     end
+
+    -- Legacy separate dimensions are intentionally ignored.
+    -- A saved Size is used when present; otherwise Size defaults to 4.
 end
 
 --==============================================================
@@ -496,8 +470,7 @@ local Visuals = {}
 local Hitboxes = {}
 local UI = {}
 
-local RenderName =
-    "SmartTargetingV2_" .. HttpService:GenerateGUID(false)
+local RenderName = "SmartTargetingV2_" .. HttpService:GenerateGUID(false)
 
 local function connect(signal, callback, bucket)
     local connection = signal:Connect(callback)
@@ -546,7 +519,6 @@ local function setConfig(group, key, value)
         or key == "ActivationKey"
         or key == "Key"
         or key == "KeybindEnabled" then
-
         resetActivation()
 
     elseif group == "V1" and key == "AimEnabled" then
@@ -660,10 +632,7 @@ end
 local Floating = make("TextButton", {
     Name = "FloatingV2",
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(
-        Config.V2.FloatingX,
-        Config.V2.FloatingY
-    ),
+    Position = UDim2.fromScale(Config.V2.FloatingX, Config.V2.FloatingY),
     Size = UDim2.fromOffset(112, 46),
     BackgroundColor3 = Color3.fromRGB(30, 35, 48),
     TextColor3 = Color3.new(1, 1, 1),
@@ -687,7 +656,7 @@ make("UIStroke", {
     Transparency = 0.15,
 }, Floating)
 
--- No bottom-left status panel is created.
+-- No bottom-left status panel.
 
 --==============================================================
 -- 06. SCREEN COORDINATES / VISIBILITY
@@ -701,9 +670,7 @@ local function updateScreenGeometry(camera)
     local size = Canvas.AbsoluteSize
     local viewport = camera.ViewportSize
 
-    if size ~= State.ScreenSize
-        or viewport ~= State.LastViewport then
-
+    if size ~= State.ScreenSize or viewport ~= State.LastViewport then
         State.ScreenSize = size
         State.LastViewport = viewport
 
@@ -758,11 +725,7 @@ local function visible(camera, character, position)
         return true
     end
 
-    local result = workspace:Raycast(
-        origin,
-        direction,
-        RayParameters
-    )
+    local result = workspace:Raycast(origin, direction, RayParameters)
 
     return result == nil
         or result.Instance:IsDescendantOf(character)
@@ -836,7 +799,6 @@ local function teamOptions()
     end
 
     table.sort(result)
-
     return result
 end
 
@@ -901,7 +863,6 @@ local function namedRole(part)
     if attribute == "Head"
         or attribute == "Torso"
         or attribute == "Root" then
-
         return attribute
     end
 
@@ -942,9 +903,7 @@ local function observeObject(record, object)
 
     if object:IsA("BasePart") or object:IsA("Model") then
         connect(object.AttributeChanged, function(attribute)
-            if attribute == "AimRole"
-                or attribute == "AimTargetable" then
-
+            if attribute == "AimRole" or attribute == "AimTargetable" then
                 Scanner.Mark(record)
             end
         end, bucket)
@@ -1029,8 +988,6 @@ function Scanner.Bind(record, character)
     State.ScannerRefresh = true
 end
 
--- Relative keys include class and same-name sibling index.
--- This distinguishes duplicate component names in different branches.
 local function pathBuilder(character)
     local paths = { [character] = "" }
     local siblingKeys = {}
@@ -1141,11 +1098,8 @@ function Scanner.Start(record)
             }
 
             for index, object in ipairs(descendants) do
-                if not isCurrent(record, character, generation) then
-                    return
-                end
-
-                if record.Revision ~= revision then
+                if not isCurrent(record, character, generation)
+                    or record.Revision ~= revision then
                     return
                 end
 
@@ -1161,10 +1115,8 @@ function Scanner.Start(record)
 
                     if object:IsA("Humanoid") then
                         scan.Humanoid = scan.Humanoid or object
-
                     elseif object:IsA("Motor6D") then
                         table.insert(scan.Motors, object)
-
                     elseif object:IsA("ForceField") then
                         table.insert(scan.ForceFields, object)
                     end
@@ -1202,7 +1154,6 @@ function Scanner.Start(record)
                     index / math.max(#descendants, 1) * 100
                 )
 
-                -- Spread large model scans across frames.
                 if index % 64 == 0 then
                     task.wait()
                 end
@@ -1246,7 +1197,6 @@ function Scanner.Start(record)
 
             scan.Root = root
 
-            -- Neck joints identify a head even when it was renamed.
             for _, motor in ipairs(scan.Motors) do
                 if motor.Parent then
                     local name = motor.Name:lower()
@@ -1261,14 +1211,10 @@ function Scanner.Start(record)
                 end
             end
 
-            -- Explicit AimRole attributes take precedence over heuristics.
             for _, item in ipairs(scan.Parts) do
                 local role = item.Part:GetAttribute("AimRole")
 
-                if role == "Head"
-                    or role == "Torso"
-                    or role == "Root" then
-
+                if role == "Head" or role == "Torso" or role == "Root" then
                     item.Role = role
                 end
 
@@ -1278,12 +1224,10 @@ function Scanner.Start(record)
             if #scan.Roles.Head > 0 then
                 scan.Head = scan.Roles.Head[1].Part
             else
-                -- Geometric fallback for otherwise unnamed custom rigs.
                 local highest = -math.huge
 
                 for _, item in ipairs(scan.Parts) do
                     local position = item.Part.Position
-
                     local height = root
                         and root.CFrame:PointToObjectSpace(position).Y
                         or position.Y
@@ -1297,12 +1241,10 @@ function Scanner.Start(record)
 
             if character:FindFirstChild("UpperTorso")
                 and character:FindFirstChild("LowerTorso") then
-
                 scan.Rig = "R15-style named rig"
 
             elseif character:FindFirstChild("Torso")
                 and character:FindFirstChild("Head") then
-
                 scan.Rig = "R6-style named rig"
 
             elseif humanoid then
@@ -1354,13 +1296,11 @@ function Scanner.Start(record)
 
         elseif record.Generation ~= generation
             or record.Revision ~= revision then
-
             record.Dirty = record.Character ~= nil
             record.Due = os.clock() + 0.15
             record.Status = record.Character
                 and "Queued after model change"
                 or "Waiting for character"
-
         else
             record.Error = nil
         end
@@ -1368,7 +1308,7 @@ function Scanner.Start(record)
 end
 
 --==============================================================
--- 09. LIVE CHARACTER DATA / COMPONENT RESOLUTION
+-- 09. LIVE DATA / COMPONENT RESOLUTION
 --==============================================================
 
 local function validPart(part, character)
@@ -1478,17 +1418,13 @@ local function componentList(record, mode, allowFallback)
     end
 
     if mode == "Manual" then
-        local key = Config.V2.ManualTargets[
-            tostring(record.Player.UserId)
-        ]
-
+        local key = Config.V2.ManualTargets[tostring(record.Player.UserId)]
         local item = key and scan.ByKey[key]
 
         if item then
             append(item.Part)
         end
 
-        -- No per-player choice means automatic selection.
         if not key or (#result == 0 and allowFallback) then
             appendAuto()
         end
@@ -1515,7 +1451,6 @@ local function componentList(record, mode, allowFallback)
     return result
 end
 
--- Exact V1 naming rules remain separate from Smart Scan V2.
 local function v1Character(player)
     local character = player.Character
 
@@ -1549,7 +1484,6 @@ local function v1Part(character)
     if mode == "Torso" then
         part = character:FindFirstChild("UpperTorso")
             or character:FindFirstChild("Torso")
-
     elseif mode == "Root" then
         part = character:FindFirstChild("HumanoidRootPart")
     else
@@ -1577,8 +1511,7 @@ local function evaluateV1(player, camera, origin)
 
     local character, humanoid = v1Character(player)
 
-    if not character
-        or humanoid.Health < settings.MinimumHealth then
+    if not character or humanoid.Health < settings.MinimumHealth then
         return nil
     end
 
@@ -1637,11 +1570,7 @@ end
 
 local function chooseV1(camera, origin)
     if Config.V1.StickyTarget and State.Target1 then
-        local current = evaluateV1(
-            State.Target1.Player,
-            camera,
-            origin
-        )
+        local current = evaluateV1(State.Target1.Player, camera, origin)
 
         if current then
             State.Target1 = current
@@ -1720,7 +1649,6 @@ local function evaluateV2(player, camera, origin)
 
             if screenDistance <= settings.FOV
                 and distance <= settings.MaxDistance then
-
                 table.insert(candidates, {
                     Part = part,
                     ScreenDistance = screenDistance,
@@ -1740,7 +1668,6 @@ local function evaluateV2(player, camera, origin)
     for _, candidate in ipairs(candidates) do
         if not settings.WallCheck
             or visible(camera, data.Character, candidate.Part.Position) then
-
             local score = candidate.ScreenDistance
 
             if settings.Priority == "Distance" then
@@ -1942,11 +1869,7 @@ local function screenBounds(camera, character)
         for y = -1, 1, 2 do
             for z = -1, 1, 2 do
                 local position = boxCFrame:PointToWorldSpace(
-                    Vector3.new(
-                        half.X * x,
-                        half.Y * y,
-                        half.Z * z
-                    )
+                    Vector3.new(half.X * x, half.Y * y, half.Z * z)
                 )
 
                 local point = project(camera, position)
@@ -2003,8 +1926,6 @@ local function updateVisual(player, visual, camera)
         return
     end
 
-    -- Standard rigs retain V1 behavior.
-    -- Custom rigs can use the scanner's live-data fallback.
     local character, humanoid, head, root = v1Character(player)
     local health
     local maxHealth
@@ -2040,9 +1961,7 @@ local function updateVisual(player, visual, camera)
     visual.Highlight.Adornee = character
     visual.Highlight.FillColor = tint
     visual.Highlight.OutlineColor = tint
-    visual.Highlight.FillTransparency =
-        1 - settings.HighlightOpacity / 100
-
+    visual.Highlight.FillTransparency = 1 - settings.HighlightOpacity / 100
     visual.Highlight.DepthMode = settings.ThroughWalls
         and Enum.HighlightDepthMode.AlwaysOnTop
         or Enum.HighlightDepthMode.Occluded
@@ -2269,16 +2188,13 @@ function HitboxModule.Show(player, part)
     if visual.Revision ~= State.Revision then
         visual.Revision = State.Revision
 
-        visual.Fill.Size = Vector3.new(
-            settings.X,
-            settings.Y,
-            settings.Z
-        )
+        local size = settings.Size
+        visual.Fill.Size = Vector3.new(size, size, size)
 
         local geometry = edgeGeometry(
-            settings.X,
-            settings.Y,
-            settings.Z,
+            size,
+            size,
+            size,
             settings.OutlineThickness
         )
 
@@ -2319,7 +2235,6 @@ function HitboxModule.Update(camera)
                     settings.TeamCheck,
                     settings.SpecificTeams
                 ) then
-
                 local data = liveData(record)
 
                 if data then
@@ -2380,13 +2295,15 @@ local initialViewport = workspace.CurrentCamera
     or Vector2.new(1000, 700)
 
 local Window = WindUI:CreateWindow({
-    Title = "Targeting & Visuals — Smart V2",
+    Title = "Targeting & Visuals — By 00B_qruel",
     Icon = "scan",
     Folder = "TargetingSmartV2",
+
     Size = UDim2.fromOffset(
         math.clamp(initialViewport.X - 36, 340, 680),
         math.clamp(initialViewport.Y - 60, 300, 560)
     ),
+
     MinSize = Vector2.new(320, 280),
     SideBarWidth = 165,
     AutoScale = true,
@@ -2402,7 +2319,7 @@ for _, item in ipairs({
     { "V1", "Aim V1", "crosshair" },
     { "V2", "Smart Aim V2", "scan" },
     { "Scanner", "Character Scanner", "search" },
-    { "Hitbox", "Hitbox Visuals", "box" },
+    { "Hitbox", "Hitbox", "box" },
     { "Teams", "Shared Teams", "users" },
     { "Visuals", "Player Visuals", "eye" },
     { "Appearance", "Appearance", "palette" },
@@ -2491,7 +2408,6 @@ local function dropdown(tab, title, group, key)
         Callback = function(value)
             if State.Running
                 and table.find(Choices[group .. "." .. key], value) then
-
                 setConfig(group, key, value)
             end
         end,
@@ -2512,7 +2428,7 @@ local function colorpicker(tab, title, group, key)
 end
 
 --==============================================================
--- 16. AIM V1 MENU — PRESERVED CONTROLS
+-- 16. AIM V1 MENU
 --==============================================================
 
 section(Tabs.V1, "Activation")
@@ -2523,13 +2439,7 @@ dropdown(Tabs.V1, "Activation key V1", "V1", "ActivationKey")
 
 section(Tabs.V1, "Tracking")
 
-slider(
-    Tabs.V1,
-    "Strength — 0% normal / 100% instant",
-    "V1",
-    "Strength"
-)
-
+slider(Tabs.V1, "Strength — 0% normal / 100% instant", "V1", "Strength")
 dropdown(Tabs.V1, "Target body part V1", "V1", "TargetPart")
 dropdown(Tabs.V1, "Target priority V1", "V1", "Priority")
 toggle(Tabs.V1, "Keep current target V1", "V1", "StickyTarget")
@@ -2563,12 +2473,7 @@ paragraph(
 
 section(Tabs.V2, "Activation")
 
-UI.V2Enabled = toggle(
-    Tabs.V2,
-    "Enable Smart Aim V2",
-    "V2",
-    "Enabled"
-)
+UI.V2Enabled = toggle(Tabs.V2, "Enable Smart Aim V2", "V2", "Enabled")
 
 toggle(Tabs.V2, "Enable activation key V2", "V2", "KeybindEnabled")
 dropdown(Tabs.V2, "Activation mode V2", "V2", "ActivationMode")
@@ -2600,7 +2505,6 @@ section(Tabs.V2, "Targeting")
 
 dropdown(Tabs.V2, "Preferred component V2", "V2", "TargetPart")
 dropdown(Tabs.V2, "Player priority V2", "V2", "Priority")
-
 toggle(Tabs.V2, "Keep current valid target V2", "V2", "StickyTarget")
 
 toggle(
@@ -2667,12 +2571,10 @@ local function refreshPlayerOptions()
 
     if UI.ScannerPlayer then
         ScannerUpdating = true
-
         UI.ScannerPlayer:Refresh(PlayerOptions)
 
         if State.SelectedPlayer
             and State.SelectedPlayer.Parent == Players then
-
             UI.ScannerPlayer:Select(playerLabel(State.SelectedPlayer))
         end
 
@@ -2736,10 +2638,7 @@ UI.ManualComponent = Tabs.Scanner:Dropdown({
         if value == "Automatic" then
             Config.V2.ManualTargets[key] = nil
 
-        elseif record
-            and record.Scan
-            and record.Scan.ByKey[value] then
-
+        elseif record and record.Scan and record.Scan.ByKey[value] then
             Config.V2.ManualTargets[key] = value
         else
             return
@@ -2805,10 +2704,7 @@ Tabs.Scanner:Button({
 
     Callback = function()
         local record = Records[State.SelectedPlayer]
-        local count = record and record.Scan
-            and #record.Scan.Entries
-            or 0
-
+        local count = record and record.Scan and #record.Scan.Entries or 0
         local pages = math.max(math.ceil(count / 20), 1)
 
         State.ScannerPage = math.min(State.ScannerPage + 1, pages)
@@ -2856,14 +2752,12 @@ local function updateScannerDisplay()
     local data = liveData(record)
     local manualKey = Config.V2.ManualTargets[tostring(player.UserId)]
     local manualExists = manualKey and scan.ByKey[manualKey] ~= nil
-
     local controller
 
     if scan.Humanoid then
         controller = "Humanoid"
     elseif finite(scan.Character:GetAttribute("Health"))
         and finite(scan.Character:GetAttribute("MaxHealth")) then
-
         controller = "Model Health / MaxHealth attributes"
     else
         controller = "No supported live-health controller"
@@ -2902,9 +2796,7 @@ local function updateScannerDisplay()
 
         ScannerUpdating = true
         UI.ManualComponent:Refresh(options)
-        UI.ManualComponent:Select(
-            manualExists and manualKey or "Automatic"
-        )
+        UI.ManualComponent:Select(manualExists and manualKey or "Automatic")
         ScannerUpdating = false
 
         ManualOptionsSignature = signature
@@ -2912,7 +2804,6 @@ local function updateScannerDisplay()
 
     local pageSize = 20
     local pages = math.max(math.ceil(#scan.Entries / pageSize), 1)
-
     State.ScannerPage = math.clamp(State.ScannerPage, 1, pages)
 
     local lines = {
@@ -2930,13 +2821,14 @@ local function updateScannerDisplay()
 
     for index = first, last do
         local entry = scan.Entries[index]
-
         local suffix = entry.Targetable
             and ("TARGETABLE: " .. entry.Reason)
             or entry.Reason
 
-        table.insert(lines, entry.Key
-            .. (suffix ~= "" and (" — " .. suffix) or ""))
+        table.insert(
+            lines,
+            entry.Key .. (suffix ~= "" and (" — " .. suffix) or "")
+        )
     end
 
     if #scan.Entries == 0 then
@@ -2947,76 +2839,11 @@ local function updateScannerDisplay()
 end
 
 --==============================================================
--- 19. HITBOX MENU
+-- 19. HITBOX MENU — ONE TOGGLE / ONE SIZE SLIDER
 --==============================================================
 
-paragraph(
-    Tabs.Hitbox,
-    "Visual-only hitbox configuration",
-    "These boxes visualize configured dimensions around a component. "
-        .. "They do not enlarge real body parts or alter hit registration. "
-        .. "Dimensions are in studs; transparency 100% hides that layer."
-)
-
-section(Tabs.Hitbox, "Main controls")
-
-toggle(Tabs.Hitbox, "Enable hitbox visualization", "Hitbox", "Enabled")
-dropdown(Tabs.Hitbox, "Hitbox anchor component", "Hitbox", "TargetPart")
-
-slider(Tabs.Hitbox, "Width X — studs", "Hitbox", "X", 0.1)
-slider(Tabs.Hitbox, "Height Y — studs", "Hitbox", "Y", 0.1)
-slider(Tabs.Hitbox, "Depth Z — studs", "Hitbox", "Z", 0.1)
-
-UI.HitboxDimensions = paragraph(
-    Tabs.Hitbox,
-    "Current dimensions",
-    "Preparing..."
-)
-
-section(Tabs.Hitbox, "Appearance")
-
-toggle(Tabs.Hitbox, "Show hitbox fill", "Hitbox", "Fill")
-slider(Tabs.Hitbox, "Fill transparency — percent", "Hitbox", "Transparency")
-
-toggle(Tabs.Hitbox, "Show hitbox outlines", "Hitbox", "Outlines")
-
-slider(
-    Tabs.Hitbox,
-    "Outline thickness — studs",
-    "Hitbox",
-    "OutlineThickness",
-    0.01
-)
-
-slider(
-    Tabs.Hitbox,
-    "Outline transparency — percent",
-    "Hitbox",
-    "OutlineTransparency"
-)
-
-colorpicker(Tabs.Hitbox, "Default hitbox color", "Hitbox", "Color")
-toggle(Tabs.Hitbox, "Use shared team colors", "Hitbox", "TeamColors")
-toggle(Tabs.Hitbox, "Show hitboxes through walls", "Hitbox", "ThroughWalls")
-
-section(Tabs.Hitbox, "Filtering and performance")
-
-toggle(Tabs.Hitbox, "Exclude teammates", "Hitbox", "TeamCheck")
-toggle(Tabs.Hitbox, "Enable specific-team hitboxes", "Hitbox", "SpecificTeams")
-
-slider(
-    Tabs.Hitbox,
-    "Maximum visualization distance — studs",
-    "Hitbox",
-    "MaxDistance"
-)
-
-slider(
-    Tabs.Hitbox,
-    "Maximum visible hitboxes — nearest first",
-    "Hitbox",
-    "MaxVisible"
-)
+toggle(Tabs.Hitbox, "Enable hitbox", "Hitbox", "Enabled")
+slider(Tabs.Hitbox, "Hitbox size — studs", "Hitbox", "Size", 0.1)
 
 --==============================================================
 -- 20. SHARED TEAM MENU
@@ -3149,6 +2976,8 @@ end
 -- 21. ESP / APPEARANCE / SYSTEM MENUS
 --==============================================================
 
+paragraph(Tabs.System, "Owner", "By 00B_qruel")
+
 section(Tabs.Visuals, "Player overlays")
 
 toggle(Tabs.Visuals, "Player highlights", "V1", "Highlights")
@@ -3174,25 +3003,12 @@ toggle(Tabs.Visuals, "Show visuals through walls", "V1", "ThroughWalls")
 section(Tabs.Appearance, "V1 FOV")
 
 colorpicker(Tabs.Appearance, "FOV color V1", "V1", "FOVColor")
-
-slider(
-    Tabs.Appearance,
-    "FOV outline thickness V1",
-    "V1",
-    "FOVThickness",
-    0.5
-)
+slider(Tabs.Appearance, "FOV outline thickness V1", "V1", "FOVThickness", 0.5)
 
 section(Tabs.Appearance, "Player visuals")
 
 toggle(Tabs.Appearance, "Use shared player team colors", "V1", "TeamColors")
-
-colorpicker(
-    Tabs.Appearance,
-    "Default player visual color",
-    "V1",
-    "VisualColor"
-)
+colorpicker(Tabs.Appearance, "Default player visual color", "V1", "VisualColor")
 
 slider(
     Tabs.Appearance,
@@ -3303,8 +3119,7 @@ local function clearMenuSelection()
 end
 
 local function guardNavigation(object)
-    if not object:IsA("GuiObject")
-        or NavigationConnections[object] then
+    if not object:IsA("GuiObject") or NavigationConnections[object] then
         return
     end
 
@@ -3403,7 +3218,6 @@ local function addPlayer(player)
 
     Scanner.Bind(record, player.Character)
     createVisual(player)
-
     refreshPlayerOptions()
 end
 
@@ -3412,7 +3226,6 @@ local function removePlayer(player)
 
     if record then
         Records[player] = nil
-
         record.Generation += 1
         record.Character = nil
 
@@ -3555,7 +3368,6 @@ connect(UserInputService.InputBegan, function(input, processed)
     if Config.V2.Enabled
         and Config.V2.KeybindEnabled
         and matchesV2(input) then
-
         State.Held2 = true
 
         if Config.V2.ActivationMode == "Toggle" then
@@ -3658,8 +3470,7 @@ connect(UserInputService.InputChanged, function(input)
         return
     end
 
-    local isTouch = Drag.Input.UserInputType
-        == Enum.UserInputType.Touch
+    local isTouch = Drag.Input.UserInputType == Enum.UserInputType.Touch
 
     if isTouch and input ~= Drag.Input then
         return
@@ -3730,7 +3541,6 @@ connect(Floating.Activated, function()
     local enabled = not Config.V2.Enabled
     setConfig("V2", "Enabled", enabled)
 
-    -- Floating activation can arm V2 without a physical keyboard.
     State.TouchArmed2 = enabled
     UI.V2Enabled:Set(enabled, false, true)
 end)
@@ -3836,19 +3646,11 @@ local function updateDiagnostics()
                 .. "Floating button can enable and arm V2 for touch.",
             Config.V2.Key,
             Config.V2.ActivationMode,
-            Config.V2.KeybindEnabled and "Enabled" or "Disabled — always active"
+            Config.V2.KeybindEnabled
+                and "Enabled"
+                or "Disabled — always active"
         ))
     end
-
-    setParagraph(UI.HitboxDimensions, string.format(
-        "X %.1f × Y %.1f × Z %.1f studs\n"
-            .. "Fill transparency: %.0f%% | Outline transparency: %.0f%%",
-        Config.Hitbox.X,
-        Config.Hitbox.Y,
-        Config.Hitbox.Z,
-        Config.Hitbox.Transparency,
-        Config.Hitbox.OutlineTransparency
-    ))
 
     setParagraph(UI.TeamSummary, string.format(
         "Selected teams: %d\n%s\n"
@@ -3886,7 +3688,6 @@ local function cleanup()
 
     RunService:UnbindFromRenderStep(RenderName)
     clearMenuSelection()
-
     disconnectAll(Connections)
 
     for _, record in pairs(Records) do
@@ -3968,7 +3769,6 @@ connect(RunService.Heartbeat, function(deltaTime)
         saveConfiguration()
     end
 
-    -- Prioritize the manually selected character.
     local selected = Records[State.SelectedPlayer]
 
     if selected
@@ -3976,7 +3776,6 @@ connect(RunService.Heartbeat, function(deltaTime)
         and not selected.Busy
         and selected.Due <= now
         and State.ScanWorkers < 2 then
-
         Scanner.Start(selected)
     end
 
@@ -3988,7 +3787,6 @@ connect(RunService.Heartbeat, function(deltaTime)
         if record.Dirty
             and not record.Busy
             and record.Due <= now then
-
             Scanner.Start(record)
         end
     end
@@ -4053,7 +3851,6 @@ RunService:BindToRenderStep(
             State.Target1 = nil
             State.Target2 = nil
             State.ActiveSystem = "No camera"
-
             hideEverything()
             return
         end
@@ -4068,15 +3865,12 @@ RunService:BindToRenderStep(
 
         local origin = overlayCenter()
 
-        -- Both rings use screen-relative centering.
-        -- Their positions are never overwritten with viewport offsets.
         updateCircle(
             Circle1,
             Config.V1,
             Config.V1.ShowFOV
         )
 
-        -- V2 ring only appears while the V2 module is enabled.
         updateCircle(
             Circle2,
             Config.V2,
@@ -4088,8 +3882,7 @@ RunService:BindToRenderStep(
         local ownCharacter, ownHumanoid = v1Character(LocalPlayer)
         local ownSmartData = liveData(Records[LocalPlayer])
 
-        local alive = ownCharacter ~= nil
-            and ownHumanoid ~= nil
+        local alive = ownCharacter ~= nil and ownHumanoid ~= nil
             or ownSmartData ~= nil
 
         local inputAllowed = State.Focused
@@ -4118,7 +3911,6 @@ RunService:BindToRenderStep(
             )
 
         if inputAllowed and active2 then
-            -- One camera writer: V2 owns it while active.
             State.ActiveSystem = "Smart Aim V2"
             State.Target1 = nil
 
@@ -4126,7 +3918,6 @@ RunService:BindToRenderStep(
 
             if target
                 and target.ScreenDistance > Config.V2.Deadzone then
-
                 local smoothness = Config.V2.Smoothness
                 local alpha
 
@@ -4135,7 +3926,6 @@ RunService:BindToRenderStep(
                 else
                     local normalized = smoothness / 100
                     local response = 2 + (1 - normalized) ^ 2 * 58
-
                     alpha = 1 - math.exp(-response * deltaTime)
                 end
 
@@ -4171,7 +3961,6 @@ RunService:BindToRenderStep(
         if State.VisualElapsed >= 1 / Config.V1.VisualRefreshRate then
             State.VisualElapsed = 0
 
-            -- Refresh with the final camera orientation for this frame.
             for player, visual in pairs(Visuals) do
                 updateVisual(player, visual, camera)
             end
