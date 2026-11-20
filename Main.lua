@@ -1,21 +1,52 @@
--- WindUI: aim assistance, player visuals, and movement controls.
--- Client-side; intended for your own experience / authorized testing.
--- Right-click: aim | RightShift: toggle menu
--- Use "Unload" to disconnect everything and restore movement.
+--[[
+    WindUI Player Toolkit
+
+    Aim:
+      Toggle ON = automatic head assistance.
+      No right-click, keyboard key, or touch hold required.
+      0% strength = no assistance.
+      100% strength = instant lock.
+
+    Movement:
+      0% = original movement.
+      100% = double original WalkSpeed / JumpPower.
+
+    Intended for your own experience / authorized testing.
+    Unload the previous version before running this replacement.
+]]
+
+-- Services -------------------------------------------------------------------
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
+local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
-assert(LocalPlayer, "Run this on the client.")
+assert(LocalPlayer, "This script must run on the client.")
 
--- For a Studio-compatible WindUI installation, replace this loader
--- with your local ModuleScript require.
-local WindUI = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
-))()
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- WindUI ---------------------------------------------------------------------
+
+local WindUI
+
+if RunService:IsStudio() then
+    -- Studio installation:
+    -- ReplicatedStorage
+    --   WindUI
+    --     Init
+    WindUI = require(
+        ReplicatedStorage:WaitForChild("WindUI"):WaitForChild("Init")
+    )
+else
+    WindUI = loadstring(game:HttpGet(
+        "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
+    ))()
+end
+
+-- Settings -------------------------------------------------------------------
 
 local S = {
     Aim = false,
@@ -39,9 +70,13 @@ local S = {
 
 local alive = true
 local target = nil
+local movement = nil
+
 local connections = {}
 local records = {}
-local movement = nil
+
+local renderName =
+    "WindUI_PlayerToolkit_" .. HttpService:GenerateGUID(false)
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -51,36 +86,38 @@ end
 
 local function create(className, properties, parent)
     local object = Instance.new(className)
+
     for key, value in pairs(properties) do
         object[key] = value
     end
+
     object.Parent = parent
     return object
 end
 
-local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-
-local visualFolder = create("Folder", {
-    Name = "WindUI_PlayerVisuals",
-}, playerGui)
-
-local highlightFolder = create("Folder", {
-    Name = "WindUI_LocalHighlights",
-}, workspace)
+-- FOV overlay ----------------------------------------------------------------
+-- Parent directly to PlayerGui.
+-- Set inset properties explicitly in a predictable order.
 
 local overlay = create("ScreenGui", {
     Name = "WindUI_AimOverlay",
     ResetOnSpawn = false,
-    IgnoreGuiInset = true,
-    ScreenInsets = Enum.ScreenInsets.None,
     DisplayOrder = 10,
-}, visualFolder)
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+overlay.IgnoreGuiInset = true
+overlay.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+overlay.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
 
 local circle = create("Frame", {
+    Name = "FOVCircle",
     AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(S.FOV * 2, S.FOV * 2),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    Size = UDim2.fromOffset(S.FOV * 2, S.FOV * 2),
+    Active = false,
     Visible = false,
 }, overlay)
 
@@ -94,8 +131,19 @@ local circleStroke = create("UIStroke", {
     Transparency = 0.2,
 }, circle)
 
+-- Visual containers ----------------------------------------------------------
+
+local visualFolder = create("Folder", {
+    Name = "WindUI_PlayerVisuals",
+}, PlayerGui)
+
+local highlightFolder = create("Folder", {
+    Name = "WindUI_LocalHighlights",
+}, workspace)
+
+-- Character helpers ----------------------------------------------------------
+
 local function sameTeam(player)
-    -- Neutral players are not automatically teammates.
     return not LocalPlayer.Neutral
         and not player.Neutral
         and LocalPlayer.Team ~= nil
@@ -104,6 +152,7 @@ end
 
 local function getCharacterParts(player)
     local character = player.Character
+
     if not character then
         return nil
     end
@@ -118,25 +167,36 @@ local function getCharacterParts(player)
     return character, humanoid, head
 end
 
+-- Aim assistance -------------------------------------------------------------
+
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.IgnoreWater = true
+
 local function visibleFromCamera(camera, character, head)
-    local excluded = { camera }
+    local excluded = { camera, highlightFolder }
+
     if LocalPlayer.Character then
         table.insert(excluded, LocalPlayer.Character)
     end
 
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = excluded
-    params.IgnoreWater = true
+    raycastParams.FilterDescendantsInstances = excluded
 
     local origin = camera.CFrame.Position
+    local direction = head.Position - origin
+
+    if direction.Magnitude <= 0.001 then
+        return true
+    end
+
     local result = workspace:Raycast(
         origin,
-        head.Position - origin,
-        params
+        direction,
+        raycastParams
     )
 
-    return result == nil or result.Instance:IsDescendantOf(character)
+    return result == nil
+        or result.Instance:IsDescendantOf(character)
 end
 
 local function aimCandidate(player, camera)
@@ -149,6 +209,7 @@ local function aimCandidate(player, camera)
     end
 
     local character, humanoid, head = getCharacterParts(player)
+
     if not character then
         return nil
     end
@@ -164,10 +225,10 @@ local function aimCandidate(player, camera)
         return nil
     end
 
-    local center = camera.ViewportSize / 2
-    local distance = (
-        Vector2.new(projected.X, projected.Y) - center
-    ).Magnitude
+    -- Same center and coordinate space as the FOV overlay.
+    local center = camera.ViewportSize * 0.5
+    local screenPosition = Vector2.new(projected.X, projected.Y)
+    local distance = (screenPosition - center).Magnitude
 
     if distance > S.FOV then
         return nil
@@ -188,6 +249,7 @@ local function findTarget(camera)
 
     for _, player in ipairs(Players:GetPlayers()) do
         local head, distance = aimCandidate(player, camera)
+
         if head and distance < bestDistance then
             bestPlayer = player
             bestHead = head
@@ -198,10 +260,65 @@ local function findTarget(camera)
     return bestPlayer, bestHead
 end
 
+local function updateAim(camera, dt)
+    local character = LocalPlayer.Character
+    local humanoid = character
+        and character:FindFirstChildOfClass("Humanoid")
+
+    -- Automatic activation: no input button checks.
+    local aiming = S.Aim
+        and S.Strength > 0
+        and humanoid ~= nil
+        and humanoid.Health > 0
+        and UserInputService:GetFocusedTextBox() == nil
+
+    if not aiming then
+        target = nil
+        return
+    end
+
+    local head
+
+    -- Retain the current target while it passes all checks.
+    if target then
+        head = aimCandidate(target, camera)
+    end
+
+    if not head then
+        target, head = findTarget(camera)
+    end
+
+    if not head then
+        return
+    end
+
+    local position = camera.CFrame.Position
+    local direction = head.Position - position
+
+    if direction.Magnitude <= 0.001 then
+        return
+    end
+
+    local desired = CFrame.lookAt(position, head.Position)
+
+    if S.Strength >= 100 then
+        camera.CFrame = desired
+    else
+        -- Smooth, frame-rate-independent assistance.
+        -- Approaches zero continuously as strength approaches zero.
+        local strength = S.Strength / 100
+        local rate = 30 * strength * strength
+        local alpha = 1 - math.exp(-rate * dt)
+
+        camera.CFrame = camera.CFrame:Lerp(desired, alpha)
+    end
+end
+
 -- Player visuals -------------------------------------------------------------
 
 local function removeVisual(player)
     local record = records[player]
+
     if record then
         record.Highlight:Destroy()
         record.Billboard:Destroy()
@@ -228,9 +345,11 @@ local function makeVisual(player, character, head)
         MaxDistance = 10000,
         AlwaysOnTop = false,
         Enabled = false,
-    }, visualFolder)
+        ResetOnSpawn = false,
+    }, PlayerGui)
 
     local label = create("TextLabel", {
+        Name = "Info",
         Size = UDim2.new(1, 0, 0, 38),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
@@ -242,6 +361,7 @@ local function makeVisual(player, character, head)
     }, billboard)
 
     local healthBackground = create("Frame", {
+        Name = "HealthBackground",
         Position = UDim2.new(0.15, 0, 0, 43),
         Size = UDim2.new(0.7, 0, 0, 6),
         BackgroundColor3 = Color3.fromRGB(30, 30, 35),
@@ -254,6 +374,7 @@ local function makeVisual(player, character, head)
     }, healthBackground)
 
     local healthFill = create("Frame", {
+        Name = "HealthFill",
         Size = UDim2.fromScale(1, 1),
         BackgroundColor3 = Color3.fromRGB(70, 220, 100),
         BorderSizePixel = 0,
@@ -278,6 +399,12 @@ local function makeVisual(player, character, head)
 end
 
 local function updateVisuals(camera)
+    local localCharacter = LocalPlayer.Character
+    local root = localCharacter
+        and localCharacter:FindFirstChild("HumanoidRootPart")
+
+    local origin = root and root.Position or camera.CFrame.Position
+
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then
             continue
@@ -300,6 +427,7 @@ local function updateVisuals(camera)
                 record.Highlight.Enabled = false
                 record.Billboard.Enabled = false
             end
+
             continue
         end
 
@@ -314,9 +442,11 @@ local function updateVisuals(camera)
 
         record.Highlight.FillColor = color
         record.Highlight.OutlineColor = color
+
         record.Highlight.DepthMode = S.ThroughWalls
             and Enum.HighlightDepthMode.AlwaysOnTop
             or Enum.HighlightDepthMode.Occluded
+
         record.Highlight.Enabled = true
 
         record.Billboard.AlwaysOnTop = S.ThroughWalls
@@ -327,31 +457,31 @@ local function updateVisuals(camera)
 
         if S.Names then
             table.insert(lines, string.format(
-                "%s (@%s)", player.DisplayName, player.Name
+                "%s (@%s)",
+                player.DisplayName,
+                player.Name
             ))
         end
 
         if S.Distance then
-            local root = LocalPlayer.Character
-                and LocalPlayer.Character:FindFirstChild(
-                    "HumanoidRootPart"
-                )
-
-            local origin = root and root.Position
-                or camera.CFrame.Position
-
             table.insert(lines, string.format(
-                "%.0f studs", (head.Position - origin).Magnitude
+                "%.0f studs",
+                (head.Position - origin).Magnitude
             ))
         end
 
         record.Label.Text = table.concat(lines, "\n")
         record.HealthBackground.Visible = S.Healthbar
 
-        local fraction = humanoid.MaxHealth > 0
-            and math.clamp(
-                humanoid.Health / humanoid.MaxHealth, 0, 1
-            ) or 0
+        local fraction = 0
+
+        if humanoid.MaxHealth > 0 then
+            fraction = math.clamp(
+                humanoid.Health / humanoid.MaxHealth,
+                0,
+                1
+            )
+        end
 
         record.HealthFill.Size = UDim2.fromScale(fraction, 1)
         record.HealthFill.BackgroundColor3 =
@@ -359,7 +489,13 @@ local function updateVisuals(camera)
     end
 end
 
-connect(Players.PlayerRemoving, removeVisual)
+connect(Players.PlayerRemoving, function(player)
+    if target == player then
+        target = nil
+    end
+
+    removeVisual(player)
+end)
 
 -- Movement -------------------------------------------------------------------
 
@@ -368,17 +504,17 @@ local function restoreMovement()
         return
     end
 
-    local h = movement.Humanoid
+    local humanoid = movement.Humanoid
 
-    if h.Parent then
+    if humanoid.Parent then
         if movement.SpeedApplied then
-            h.WalkSpeed = movement.WalkSpeed
+            humanoid.WalkSpeed = movement.WalkSpeed
         end
 
         if movement.JumpApplied then
-            h.JumpPower = movement.JumpPower
-            h.JumpHeight = movement.JumpHeight
-            h.UseJumpPower = movement.UseJumpPower
+            humanoid.JumpPower = movement.JumpPower
+            humanoid.JumpHeight = movement.JumpHeight
+            humanoid.UseJumpPower = movement.UseJumpPower
         end
     end
 
@@ -391,6 +527,7 @@ local function updateMovement()
         and character:FindFirstChildOfClass("Humanoid")
 
     if not humanoid or humanoid.Health <= 0 then
+        restoreMovement()
         return
     end
 
@@ -411,24 +548,34 @@ local function updateMovement()
     if S.Speed > 0 then
         humanoid.WalkSpeed =
             movement.WalkSpeed * (1 + S.Speed / 100)
+
         movement.SpeedApplied = true
     elseif movement.SpeedApplied then
         humanoid.WalkSpeed = movement.WalkSpeed
         movement.SpeedApplied = false
     else
-        -- Follow normal game changes while the override is off.
         movement.WalkSpeed = humanoid.WalkSpeed
     end
 
     if S.Jump > 0 then
-        humanoid.UseJumpPower = true
-        humanoid.JumpPower =
-            movement.JumpPower * (1 + S.Jump / 100)
+        local multiplier = 1 + S.Jump / 100
+
+        -- Preserve the experience's original jump mode.
+        if movement.UseJumpPower then
+            humanoid.JumpPower =
+                movement.JumpPower * multiplier
+        else
+            -- Equivalent height increase for a jump-power multiplier.
+            humanoid.JumpHeight =
+                movement.JumpHeight * multiplier * multiplier
+        end
+
         movement.JumpApplied = true
     elseif movement.JumpApplied then
         humanoid.JumpPower = movement.JumpPower
         humanoid.JumpHeight = movement.JumpHeight
         humanoid.UseJumpPower = movement.UseJumpPower
+
         movement.JumpApplied = false
     else
         movement.JumpPower = humanoid.JumpPower
@@ -437,43 +584,78 @@ local function updateMovement()
     end
 end
 
+connect(LocalPlayer.CharacterRemoving, function()
+    target = nil
+    restoreMovement()
+end)
+
 -- WindUI menu ----------------------------------------------------------------
 
 local Window = WindUI:CreateWindow({
     Title = "Player Toolkit",
     Icon = "settings",
-    Size = UDim2.fromOffset(600, 500),
+    Size = UDim2.fromOffset(560, 460),
     Theme = "Dark",
-    ToggleKey = Enum.KeyCode.RightShift,
+
+    -- Touch-accessible reopen button: no keyboard required.
+    OpenButton = {
+        Title = "Open Toolkit",
+        Enabled = true,
+        Draggable = true,
+        OnlyMobile = false,
+        CornerRadius = UDim.new(1, 0),
+    },
 })
 
-local AimTab = Window:Tab({ Title = "Aim", Icon = "crosshair" })
-local VisualTab = Window:Tab({ Title = "Visuals", Icon = "eye" })
-local MovementTab = Window:Tab({ Title = "Movement", Icon = "footprints" })
-local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
+local AimTab = Window:Tab({
+    Title = "Aim",
+    Icon = "crosshair",
+})
 
-local function toggle(tab, title, key)
-    tab:Toggle({
+local VisualTab = Window:Tab({
+    Title = "Visuals",
+    Icon = "eye",
+})
+
+local MovementTab = Window:Tab({
+    Title = "Movement",
+    Icon = "footprints",
+})
+
+local SettingsTab = Window:Tab({
+    Title = "Settings",
+    Icon = "settings",
+})
+
+local function toggle(tab, title, key, resetTarget)
+    return tab:Toggle({
         Title = title,
         Value = S[key],
+
         Callback = function(value)
             S[key] = value
-            target = nil
+
+            if resetTarget then
+                target = nil
+            end
         end,
     })
 end
 
 local function slider(tab, title, key, minimum, maximum)
-    tab:Slider({
+    return tab:Slider({
         Title = title,
         Step = 1,
+
         Value = {
             Min = minimum,
             Max = maximum,
             Default = S[key],
         },
+
         Callback = function(value)
             local number = tonumber(value)
+
             if number then
                 S[key] = math.clamp(number, minimum, maximum)
             end
@@ -481,28 +663,76 @@ local function slider(tab, title, key, minimum, maximum)
     })
 end
 
-toggle(AimTab, "Enable aim assistance — hold right-click", "Aim")
-slider(AimTab, "Aim strength: 0% normal / 100% instant", "Strength", 0, 100)
-slider(AimTab, "FOV radius (pixels)", "FOV", 10, 600)
-toggle(AimTab, "Show FOV circle", "ShowFOV")
-toggle(AimTab, "Team check", "TeamCheck")
-toggle(AimTab, "Wall check", "WallCheck")
-toggle(AimTab, "Dead check", "DeadCheck")
+toggle(
+    AimTab,
+    "Enable aim assistance - automatic",
+    "Aim",
+    true
+)
 
-toggle(VisualTab, "Enable player highlights / visuals", "Visuals")
-toggle(VisualTab, "Show names", "Names")
-toggle(VisualTab, "Show distance", "Distance")
-toggle(VisualTab, "Show health bars", "Healthbar")
-toggle(VisualTab, "Hide teammates", "VisualTeamCheck")
-toggle(VisualTab, "Show through walls", "ThroughWalls")
+slider(
+    AimTab,
+    "Aim strength: 0% normal / 100% instant",
+    "Strength",
+    0,
+    100
+)
 
-slider(MovementTab, "WalkSpeed boost: 0% normal / 100% double", "Speed", 0, 100)
-slider(MovementTab, "JumpPower boost: 0% normal / 100% double", "Jump", 0, 100)
+slider(
+    AimTab,
+    "FOV circle radius",
+    "FOV",
+    10,
+    600
+)
 
--- Runtime and cleanup --------------------------------------------------------
+toggle(AimTab, "Show FOV circle", "ShowFOV", false)
+toggle(AimTab, "Team check", "TeamCheck", true)
+toggle(AimTab, "Wall check", "WallCheck", true)
+toggle(AimTab, "Dead check", "DeadCheck", true)
 
-local renderName =
-    "WindUI_PlayerToolkit_" .. HttpService:GenerateGUID(false)
+toggle(
+    VisualTab,
+    "Enable player highlights / visuals",
+    "Visuals",
+    false
+)
+
+toggle(VisualTab, "Show names", "Names", false)
+toggle(VisualTab, "Show distance", "Distance", false)
+toggle(VisualTab, "Show health bars", "Healthbar", false)
+
+toggle(
+    VisualTab,
+    "Hide teammates",
+    "VisualTeamCheck",
+    false
+)
+
+toggle(
+    VisualTab,
+    "Show through walls",
+    "ThroughWalls",
+    false
+)
+
+slider(
+    MovementTab,
+    "WalkSpeed: 0% normal / 100% double",
+    "Speed",
+    0,
+    100
+)
+
+slider(
+    MovementTab,
+    "Jump boost: 0% normal / 100% double power",
+    "Jump",
+    0,
+    100
+)
+
+-- Cleanup --------------------------------------------------------------------
 
 local function cleanup()
     if not alive then
@@ -518,23 +748,35 @@ local function cleanup()
         connection:Disconnect()
     end
 
+    table.clear(connections)
+
     restoreMovement()
+
+    for player in pairs(records) do
+        removeVisual(player)
+    end
+
+    overlay:Destroy()
     visualFolder:Destroy()
     highlightFolder:Destroy()
 end
 
 SettingsTab:Button({
     Title = "Unload and restore movement",
+
     Callback = function()
         cleanup()
         Window:Destroy()
     end,
 })
 
--- If WindUI itself is destroyed, also remove toolkit effects.
-if WindUI.ScreenGui then
+if typeof(WindUI.ScreenGui) == "Instance" then
     connect(WindUI.ScreenGui.Destroying, cleanup)
 end
+
+connect(overlay.Destroying, cleanup)
+
+-- Runtime --------------------------------------------------------------------
 
 local updateTimer = 0
 
@@ -547,71 +789,31 @@ RunService:BindToRenderStep(
         end
 
         local camera = workspace.CurrentCamera
+
         if not camera then
             return
         end
 
-        local center = camera.ViewportSize / 2
+        -- Explicitly use the exact same center as aimCandidate().
+        -- DeviceSafeInsets keeps the overlay origin aligned with
+        -- WorldToViewportPoint(), including on notched phones.
+        local center = camera.ViewportSize * 0.5
+
         circle.Position = UDim2.fromOffset(center.X, center.Y)
         circle.Size = UDim2.fromOffset(S.FOV * 2, S.FOV * 2)
         circle.Visible = S.Aim and S.ShowFOV
 
-        local localHumanoid = LocalPlayer.Character
-            and LocalPlayer.Character:FindFirstChildOfClass(
-                "Humanoid"
-            )
-
-        local aiming = S.Aim
-            and S.Strength > 0
-            and localHumanoid ~= nil
-            and localHumanoid.Health > 0
-            and UIS:GetFocusedTextBox() == nil
-            and UIS:IsMouseButtonPressed(
-                Enum.UserInputType.MouseButton2
-            )
-
-        if aiming then
-            local head = target and aimCandidate(target, camera)
-
-            if not head then
-                target, head = findTarget(camera)
-            end
-
-            if head then
-                local offset = head.Position - camera.CFrame.Position
-
-                if offset.Magnitude > 0.001 then
-                    local desired = CFrame.lookAt(
-                        camera.CFrame.Position,
-                        head.Position
-                    )
-
-                    if S.Strength >= 100 then
-                        camera.CFrame = desired
-                    else
-                        -- Frame-rate-independent interpolation.
-                        local strength = S.Strength / 100
-                        local rate = 2 + 28 * strength * strength
-                        local alpha = 1 - math.exp(-rate * dt)
-
-                        camera.CFrame =
-                            camera.CFrame:Lerp(desired, alpha)
-                    end
-                end
-            end
-        else
-            target = nil
-        end
+        updateAim(camera, dt)
 
         circleStroke.Color = target
             and Color3.fromRGB(100, 255, 150)
             or Color3.fromRGB(220, 225, 255)
 
-        -- Update labels, bars, and movement at 10 Hz.
         updateTimer += dt
 
         if updateTimer >= 0.1 then
             updateTimer = 0
+
             updateVisuals(camera)
             updateMovement()
         end
